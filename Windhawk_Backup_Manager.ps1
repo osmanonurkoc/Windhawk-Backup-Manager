@@ -10,7 +10,8 @@
     - Registry-Driven Listing: Pulls exact active mods straight from the registry without duplicates.
     - Smart Source Backup: Automatically selectively targets and backs up local mod source files (ModsSource).
     - Precision Binary Export: Bundles compiled engine binaries mapped accurately via LibraryFileName.
-    - Selective Registry Export: Parses the exported registry file and strips out settings for unselected mods.
+    - Selective Registry Backup: Parses the exported registry file and strips out settings for unselected mods.
+    - Selective Registry Restore: Filters the registry file during restore to strictly import only the chosen mods.
     - Fluent Design UI: WinUI3 style toggle switches, modern scrollbars, and dynamic mode transitions.
     - Safe Execution: Temporarily manages Windhawk service states to prevent file locking issues.
     - Theme Engine: Auto-detects System Light/Dark mode with native Win11 DWM titlebar styling.
@@ -547,14 +548,45 @@ if ($BtnConfirmRestore) {
             Stop-Service -Name "WindhawkService" -Force -ErrorAction SilentlyContinue
 
             if (Test-Path "$restoreTempDir\windhawk_reg.reg") {
-                reg import "$restoreTempDir\windhawk_reg.reg" | Out-Null
+                # 1. SMART REGISTRY RESTORE: Filter the registry file to strictly import only the chosen mods
+                $regLines = [System.IO.File]::ReadAllLines("$restoreTempDir\windhawk_reg.reg")
+                $filteredLines = New-Object System.Collections.Generic.List[string]
+                $keepCurrentKey = $true
+
+                foreach ($line in $regLines) {
+                    if ($line -match '^\[(.+)\]$') {
+                        $keyPath = $Matches[1]
+                        # If we are inside a mod folder under Mods or ModsWritable
+                        if ($keyPath -match 'SOFTWARE\\Windhawk\\Engine\\(?:Mods|ModsWritable)\\([^\\]+)') {
+                            $modName = $Matches[1]
+                            if ($selectedMods -contains $modName) {
+                                $keepCurrentKey = $true
+                            } else {
+                                $keepCurrentKey = $false
+                            }
+                        } else {
+                            # Include core settings folders (Settings, Engine, etc.)
+                            $keepCurrentKey = $true
+                        }
+                    }
+
+                    if ($keepCurrentKey) {
+                        $filteredLines.Add($line)
+                    }
+                }
+
+                $filteredRegPath = Join-Path $restoreTempDir "filtered_restore.reg"
+                [System.IO.File]::WriteAllLines($filteredRegPath, $filteredLines, [System.Text.Encoding]::Unicode)
+
+                # Import the strictly filtered registry file
+                reg import $filteredRegPath | Out-Null
             }
 
             if (-not (Test-Path "$whProgramData\ModsSource")) { New-Item -ItemType Directory -Path "$whProgramData\ModsSource" | Out-Null }
             if (-not (Test-Path "$whProgramData\Engine\Mods")) { New-Item -ItemType Directory -Path "$whProgramData\Engine\Mods" | Out-Null }
 
             foreach ($mod in $selectedMods) {
-                # 1. Restore local source codes (if any)
+                # 2. Restore local source codes (if any)
                 if (Test-Path "$restoreTempDir\ModsSource") {
                     Get-ChildItem -Path "$restoreTempDir\ModsSource" -ErrorAction SilentlyContinue | Where-Object {
                         $_.BaseName -eq $mod -or $_.Name.StartsWith("$mod.")
@@ -563,7 +595,7 @@ if ($BtnConfirmRestore) {
                     }
                 }
 
-                # 2. Restore compiled mod DLL files with exact LibraryFileName match
+                # 3. Restore compiled mod DLL files with exact LibraryFileName match
                 $libFile = $script:ModToFileMap[$mod]
                 if ($libFile -and (Test-Path "$restoreTempDir\Engine\Mods")) {
                     Get-ChildItem -Path "$restoreTempDir\Engine\Mods" -Recurse -Filter $libFile -ErrorAction SilentlyContinue | ForEach-Object {
