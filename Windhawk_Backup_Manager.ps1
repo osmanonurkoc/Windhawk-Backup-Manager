@@ -10,6 +10,7 @@
     - Registry-Driven Listing: Pulls exact active mods straight from the registry without duplicates.
     - Smart Source Backup: Automatically selectively targets and backs up local mod source files (ModsSource).
     - Precision Binary Export: Bundles compiled engine binaries mapped accurately via LibraryFileName.
+    - Selective Registry Export: Parses the exported registry file and strips out settings for unselected mods.
     - Fluent Design UI: WinUI3 style toggle switches, modern scrollbars, and dynamic mode transitions.
     - Safe Execution: Temporarily manages Windhawk service states to prevent file locking issues.
     - Theme Engine: Auto-detects System Light/Dark mode with native Win11 DWM titlebar styling.
@@ -310,6 +311,7 @@ function Populate-ModList {
             }
         }
     } else {
+        # Read from ZIP: parse the reg file inside the zip and extract the LibraryFileName mapping
         $regFile = Join-Path $SourcePath "windhawk_reg.reg"
         if (Test-Path $regFile) {
             $regContent = Get-Content $regFile -Encoding UTF8 -ErrorAction SilentlyContinue
@@ -391,10 +393,45 @@ if ($BtnBackup) {
 
                 Stop-Service -Name "WindhawkService" -Force -ErrorAction SilentlyContinue
 
-                reg export "HKLM\SOFTWARE\Windhawk" "$tempDir\windhawk_reg.reg" /y | Out-Null
+                # 1. Export the full registry to a temporary file
+                $fullRegPath = Join-Path $tempDir "full_windhawk.reg"
+                $filteredRegPath = Join-Path $tempDir "windhawk_reg.reg"
+                reg export "HKLM\SOFTWARE\Windhawk" $fullRegPath /y | Out-Null
 
+                # 2. Filter registry entries of unselected mods
+                $regLines = [System.IO.File]::ReadAllLines($fullRegPath)
+                $filteredLines = New-Object System.Collections.Generic.List[string]
+                $keepCurrentKey = $true
+
+                foreach ($line in $regLines) {
+                    if ($line -match '^\[(.+)\]$') {
+                        $keyPath = $Matches[1]
+                        # If we are inside a mod folder under Mods or ModsWritable
+                        if ($keyPath -match 'SOFTWARE\\Windhawk\\Engine\\(?:Mods|ModsWritable)\\([^\\]+)') {
+                            $modName = $Matches[1]
+                            if ($selectedMods -contains $modName) {
+                                $keepCurrentKey = $true
+                            } else {
+                                $keepCurrentKey = $false
+                            }
+                        } else {
+                            # Include core settings folders (Settings, Engine, etc.) in the backup
+                            $keepCurrentKey = $true
+                        }
+                    }
+
+                    if ($keepCurrentKey) {
+                        $filteredLines.Add($line)
+                    }
+                }
+
+                # Save the cleaned/filtered registry file (Unicode encoding is mandatory for REG format)
+                [System.IO.File]::WriteAllLines($filteredRegPath, $filteredLines, [System.Text.Encoding]::Unicode)
+                Remove-Item $fullRegPath -Force -ErrorAction SilentlyContinue
+
+                # 3. Copy files
                 foreach ($mod in $selectedMods) {
-                    # 1. LOCAL SOURCE BACKUP: Sadece "local@" ile başlayan modların kaynak kodlarını ModsSource klasörüne ekle
+                    # 1. SMART SOURCE CODE BACKUP: Only backup source codes of custom/local mods starting with "local@" to the ModsSource folder
                     if ($mod.StartsWith("local@")) {
                         Get-ChildItem -Path "$whProgramData\ModsSource" -ErrorAction SilentlyContinue | Where-Object {
                             $_.BaseName -eq $mod -or $_.Name.StartsWith("$mod.")
@@ -403,7 +440,7 @@ if ($BtnBackup) {
                         }
                     }
 
-                    # 2. COMPILED BINARY BACKUP: LibraryFileName değerine göre derlenmiş modları ekle
+                    # 2. COMPILED BINARY BACKUP: Backup compiled mod files based on matching LibraryFileName
                     $libFile = $script:ModToFileMap[$mod]
                     if ($libFile) {
                         Get-ChildItem -Path "$whProgramData\Engine\Mods" -Recurse -Filter $libFile -ErrorAction SilentlyContinue | ForEach-Object {
@@ -415,7 +452,7 @@ if ($BtnBackup) {
                     }
                 }
 
-                # Eğer ModsSource klasörüne hiçbir dosya eklenmediyse, zip içine boş klasör gitmemesi için siliyoruz
+                # If no files were added to the ModsSource folder, delete it to prevent an empty folder in the zip
                 if ((Get-ChildItem -Path "$tempDir\ModsSource").Count -eq 0) {
                     Remove-Item -Path "$tempDir\ModsSource" -Force -ErrorAction SilentlyContinue
                 }
@@ -517,7 +554,7 @@ if ($BtnConfirmRestore) {
             if (-not (Test-Path "$whProgramData\Engine\Mods")) { New-Item -ItemType Directory -Path "$whProgramData\Engine\Mods" | Out-Null }
 
             foreach ($mod in $selectedMods) {
-                # 1. Kaynak kodları geri yükle (varsa)
+                # 1. Restore local source codes (if any)
                 if (Test-Path "$restoreTempDir\ModsSource") {
                     Get-ChildItem -Path "$restoreTempDir\ModsSource" -ErrorAction SilentlyContinue | Where-Object {
                         $_.BaseName -eq $mod -or $_.Name.StartsWith("$mod.")
@@ -526,7 +563,7 @@ if ($BtnConfirmRestore) {
                     }
                 }
 
-                # 2. Derlenmiş mod DLL dosyalarını geri yükle
+                # 2. Restore compiled mod DLL files with exact LibraryFileName match
                 $libFile = $script:ModToFileMap[$mod]
                 if ($libFile -and (Test-Path "$restoreTempDir\Engine\Mods")) {
                     Get-ChildItem -Path "$restoreTempDir\Engine\Mods" -Recurse -Filter $libFile -ErrorAction SilentlyContinue | ForEach-Object {
