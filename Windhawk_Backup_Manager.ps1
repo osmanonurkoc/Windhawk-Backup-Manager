@@ -8,12 +8,13 @@
 
     Key Features:
     - Registry-Driven Listing: Pulls exact active mods straight from the registry without duplicates.
-    - Smart Source Backup: Automatically selectively targets and backs up local mod source files (ModsSource).
+    - Complete Source Backup: Backs up ALL selected mod source files to prevent Update Available errors.
     - Precision Binary Export: Bundles compiled engine binaries mapped accurately via LibraryFileName.
     - Selective Registry Backup: Parses the exported registry file and strips out settings for unselected mods.
     - Selective Registry Restore: Filters the registry file during restore to strictly import only the chosen mods.
     - Fluent Design UI: WinUI3 style toggle switches, modern scrollbars, and dynamic mode transitions.
     - Safe Execution: Temporarily manages Windhawk service states to prevent file locking issues.
+    - Silent Native Execution: Suppresses all native reg.exe streams to prevent console errors.
     - Theme Engine: Auto-detects System Light/Dark mode with native Win11 DWM titlebar styling.
 
     .AUTHOR
@@ -66,7 +67,11 @@ if (![string]::IsNullOrEmpty($AppIconBase64)) {
     try {
         $Bytes = [Convert]::FromBase64String($AppIconBase64)
         $MemStream = New-Object System.IO.MemoryStream(,$Bytes)
-        $IconBitmap = [System.Windows.Media.Imaging.BitmapFrame]::Create($MemStream)
+        $IconBitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+        $IconBitmap.BeginInit()
+        $IconBitmap.StreamSource = $MemStream
+        $IconBitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $IconBitmap.EndInit()
     } catch {}
 }
 
@@ -99,7 +104,7 @@ $ThemeObj = $Themes[$CurrentTheme]
 # =============================================================================
 # 5. XAML UI DESIGN
 # =============================================================================
-[xml]$Xaml = @"
+$Xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Windhawk Backup Manager"
@@ -242,12 +247,13 @@ $ThemeObj = $Themes[$CurrentTheme]
         <TextBlock Name="TxtStatus" Grid.Row="4" Text="System scanned, ready." VerticalAlignment="Bottom" HorizontalAlignment="Center" Foreground="{DynamicResource SubTextBrush}" FontSize="12"/>
     </Grid>
 </Window>
-"@
+'@
 
 # =============================================================================
 # 6. UI INITIALIZATION & EVENTS
 # =============================================================================
-$Reader = (New-Object System.Xml.XmlNodeReader ([xml]$Xaml))
+[xml]$xmlDoc = $Xaml
+$Reader = (New-Object System.Xml.XmlNodeReader ($xmlDoc))
 $Window = [Windows.Markup.XamlReader]::Load($Reader)
 
 if ($IconBitmap) { $Window.Icon = $IconBitmap }
@@ -397,7 +403,7 @@ if ($BtnBackup) {
                 # 1. Export the full registry to a temporary file
                 $fullRegPath = Join-Path $tempDir "full_windhawk.reg"
                 $filteredRegPath = Join-Path $tempDir "windhawk_reg.reg"
-                reg export "HKLM\SOFTWARE\Windhawk" $fullRegPath /y | Out-Null
+                Start-Process -FilePath "reg.exe" -ArgumentList "export `"HKLM\SOFTWARE\Windhawk`" `"$fullRegPath`" /y" -WindowStyle Hidden -Wait
 
                 # 2. Filter registry entries of unselected mods
                 $regLines = [System.IO.File]::ReadAllLines($fullRegPath)
@@ -432,13 +438,11 @@ if ($BtnBackup) {
 
                 # 3. Copy files
                 foreach ($mod in $selectedMods) {
-                    # 1. SMART SOURCE CODE BACKUP: Only backup source codes of custom/local mods starting with "local@" to the ModsSource folder
-                    if ($mod.StartsWith("local@")) {
-                        Get-ChildItem -Path "$whProgramData\ModsSource" -ErrorAction SilentlyContinue | Where-Object {
-                            $_.BaseName -eq $mod -or $_.Name.StartsWith("$mod.")
-                        } | ForEach-Object {
-                            Copy-Item -Path $_.FullName -Destination "$tempDir\ModsSource" -Force -ErrorAction SilentlyContinue
-                        }
+                    # 1. COMPLETE SOURCE CODE BACKUP: Backup source codes for all selected mods
+                    Get-ChildItem -Path "$whProgramData\ModsSource" -ErrorAction SilentlyContinue | Where-Object {
+                        $_.BaseName -eq $mod -or $_.BaseName -eq "$mod.wh"
+                    } | ForEach-Object {
+                        Copy-Item -Path $_.FullName -Destination "$tempDir\ModsSource" -Force -ErrorAction SilentlyContinue
                     }
 
                     # 2. COMPILED BINARY BACKUP: Backup compiled mod files based on matching LibraryFileName
@@ -579,7 +583,7 @@ if ($BtnConfirmRestore) {
                 [System.IO.File]::WriteAllLines($filteredRegPath, $filteredLines, [System.Text.Encoding]::Unicode)
 
                 # Import the strictly filtered registry file
-                reg import $filteredRegPath | Out-Null
+                Start-Process -FilePath "reg.exe" -ArgumentList "import `"$filteredRegPath`"" -WindowStyle Hidden -Wait
             }
 
             if (-not (Test-Path "$whProgramData\ModsSource")) { New-Item -ItemType Directory -Path "$whProgramData\ModsSource" | Out-Null }
@@ -589,7 +593,7 @@ if ($BtnConfirmRestore) {
                 # 2. Restore local source codes (if any)
                 if (Test-Path "$restoreTempDir\ModsSource") {
                     Get-ChildItem -Path "$restoreTempDir\ModsSource" -ErrorAction SilentlyContinue | Where-Object {
-                        $_.BaseName -eq $mod -or $_.Name.StartsWith("$mod.")
+                        $_.BaseName -eq $mod -or $_.BaseName -eq "$mod.wh"
                     } | ForEach-Object {
                         Copy-Item -Path $_.FullName -Destination "$whProgramData\ModsSource" -Force -ErrorAction SilentlyContinue
                     }
@@ -618,6 +622,138 @@ if ($BtnConfirmRestore) {
 
             $ActionPanel.Visibility = "Visible"
             $RestorePanel.Visibility = "Collapsed"
+
+            # Create a modern Fluent dialog to prompt for Logoff using Grid layout for perfectly sized buttons
+            $dialogXaml = @'
+            <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    Title="Action Required" Width="480" SizeToContent="Height" MinHeight="180"
+                    WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+                    WindowStyle="ToolWindow" Background="{DynamicResource BgBrush}">
+                <Window.Resources>
+                    <Style TargetType="Button">
+                        <Setter Property="Height" Value="36"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="4">
+                                        <TextBlock Text="{TemplateBinding Content}"
+                                                   Foreground="{TemplateBinding Foreground}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Window.Resources>
+                <Grid Margin="25">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Path Grid.Column="0" Grid.Row="0"
+                          Data="M 0,10 L 5,15 L 14,0"
+                          Stroke="{DynamicResource GreenBrush}"
+                          StrokeThickness="4"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"
+                          StrokeLineJoin="Round"
+                          VerticalAlignment="Center"
+                          Margin="10,0,25,0"
+                          Width="24" Height="20"
+                          Stretch="Uniform"/>
+
+                    <StackPanel Grid.Column="1" Grid.Row="0" VerticalAlignment="Center">
+                        <TextBlock Text="Restore completed successfully!"
+                                   FontWeight="SemiBold"
+                                   FontSize="16"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   Margin="0,0,0,8"/>
+                        <TextBlock TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   FontSize="13"
+                                   LineHeight="20">
+                            A session logoff is highly recommended. Running applications hold memory locks on injected mod files. Please log off and log back in to ensure all mods apply correctly.
+                        </TextBlock>
+                    </StackPanel>
+
+                    <Grid Grid.Row="1" Grid.ColumnSpan="2" HorizontalAlignment="Right" Margin="0,30,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="120"/>
+                            <ColumnDefinition Width="10"/>
+                            <ColumnDefinition Width="120"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Button Name="BtnLogOff" Grid.Column="0"
+                                Content="Log Off"
+                                Background="{DynamicResource AccentBrush}"
+                                Foreground="#000000"
+                                BorderThickness="0"/>
+
+                        <Button Name="BtnLater" Grid.Column="2"
+                                Content="Later"
+                                Background="{DynamicResource BtnBgBrush}"
+                                Foreground="{DynamicResource TextBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"/>
+                    </Grid>
+                </Grid>
+            </Window>
+'@
+            [xml]$dialogXmlDoc = $dialogXaml
+            $dialogReader = (New-Object System.Xml.XmlNodeReader ($dialogXmlDoc))
+            $dialogWindow = [Windows.Markup.XamlReader]::Load($dialogReader)
+            $dialogWindow.Owner = $Window
+            $dialogWindow.Resources = $Res
+
+            $dialogWindow.Add_SourceInitialized({
+                try {
+                    $InteropHelper = New-Object System.Windows.Interop.WindowInteropHelper($dialogWindow)
+                    $Hwnd = $InteropHelper.Handle
+                    if ($CurrentTheme -eq "Dark") {
+                        $Val = 1
+                        [void][Win32Tools]::DwmSetWindowAttribute($Hwnd, 20, [ref]$Val, 4)
+                    }
+                    $CornerVal = 2
+                    [void][Win32Tools]::DwmSetWindowAttribute($Hwnd, 33, [ref]$CornerVal, 4)
+                } catch { }
+            })
+
+            $BtnLogOff = $dialogWindow.FindName("BtnLogOff")
+            $BtnLater = $dialogWindow.FindName("BtnLater")
+
+            $BtnLogOff.Add_Click({
+                $dialogWindow.DialogResult = $true
+                $dialogWindow.Close()
+                logoff
+            })
+
+            $BtnLater.Add_Click({
+                $dialogWindow.DialogResult = $false
+                $dialogWindow.Close()
+                $whInstallDir = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Windhawk" -Name "InstallDir" -ErrorAction SilentlyContinue).InstallDir
+                if (-not $whInstallDir) { $whInstallDir = "$env:ProgramFiles\Windhawk" }
+                $whExe = Join-Path $whInstallDir "windhawk.exe"
+                if (Test-Path $whExe) {
+                    Start-Process -FilePath $whExe -ErrorAction SilentlyContinue
+                }
+            })
+
+            [void]$dialogWindow.ShowDialog()
 
         } catch {
             $TxtStatus.Text = "Installation error: $($_.Exception.Message)"
@@ -650,13 +786,13 @@ if ($Window) {
     })
 
     $Window.Add_Loaded({
-        if (![string]::IsNullOrEmpty($AppIconBase64)) {
+        if ($IconBitmap) {
             try {
                 $InteropHelper = New-Object System.Windows.Interop.WindowInteropHelper($Window)
                 $Hwnd = $InteropHelper.Handle
                 $IconBytes = [Convert]::FromBase64String($AppIconBase64)
-                $script:IconMemStream = New-Object System.IO.MemoryStream(,$Bytes)
-                $Bitmap = [System.Drawing.Bitmap]::FromStream($script:IconMemStream)
+                $script:HiconMemStream = New-Object System.IO.MemoryStream(,$IconBytes)
+                $Bitmap = [System.Drawing.Bitmap]::FromStream($script:HiconMemStream)
                 $Hicon = $Bitmap.GetHicon()
 
                 [void][Win32Tools]::SendMessage($Hwnd, 0x0080, [IntPtr]0, $Hicon)
