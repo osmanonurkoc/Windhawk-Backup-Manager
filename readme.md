@@ -30,11 +30,16 @@ Windhawk doesn't come with an official export or backup button out of the box. I
 
 ### Key Features
 
-* **Selective Backup & Restore:** Review your installed mods in a clean checklist and choose precisely what goes into your backup ZIP.
-* **Smart Local Source Handling:** Automatically targets and packs local source files (`local@...`) while leaving standard repository-based mods to fetch from official sources.
-* **Precise Binary Matching:** Uses registry mapping (`LibraryFileName`) to ensure compiled mod files match correctly without pulling legacy clutter.
-* **Fluent Design & Auto-Theming:** Automatically detects your Windows Dark/Light mode preference and styles itself natively with WinUI 3 inspired toggle switches and overlay scrollbars.
 * **Auto-Elevation:** Automatically handles administrator privileges required to manage the Windhawk service and system-level directories.
+* **Registry-Driven Listing:** Pulls exact active mods straight from the registry without duplicates.
+* **Complete Source Backup:** Backs up ALL selected mod source files to prevent Update Available errors.
+* **Precision Binary Export:** Bundles compiled engine binaries mapped accurately via LibraryFileName.
+* **Selective Registry Backup:** Parses the exported registry file and strips out settings for unselected mods.
+* **Selective Registry Restore:** Filters the registry file during restore to strictly import only the chosen mods.
+* **Fluent Design UI:** WinUI3 style toggle switches, modern scrollbars, and dynamic mode transitions.
+* **Safe Execution:** Temporarily manages Windhawk service states to prevent file locking issues.
+* **Silent Native Execution:** Suppresses all native reg.exe streams to prevent console errors.
+* **Theme Engine:** Auto-detects System Light/Dark mode with native Win11 DWM titlebar styling.
 
 ---
 
