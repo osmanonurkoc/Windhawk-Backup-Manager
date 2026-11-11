@@ -1,3 +1,4 @@
+
 <p align="center">
   <h2 align="center">Windhawk Backup Manager</h2>
   <p align="center">A clean, modern utility to back up and restore your Windhawk configuration and mods.</p>
@@ -45,31 +46,42 @@ Windhawk doesn't come with an official export or backup button out of the box. I
 
 ### How to Use
 
-You can run this tool either as a pre-compiled executable or directly via the PowerShell script.
+You can run this tool either as a pre-compiled executable or directly via the raw PowerShell script.
 
 #### Option A: Running the Executable (`.exe`)
+*⚠️ Note: PowerShell script-to-EXE wrappers are often flagged as "False Positives" by standard antivirus software due to how they pack the script into memory. This is completely normal and unavoidable for independent developers. If you do not trust the executable, please use Option B to inspect and run the raw, open-source script yourself.*
+
 1. Download the latest release `.exe` from the Releases page.
 2. Double-click the application. 
-3. *Note:* The application will automatically prompt you for Administrator privileges via a UAC pop-up because it needs access to `C:\ProgramData\Windhawk` and system services.
+3. The application will automatically prompt you for Administrator privileges via a UAC pop-up because it needs access to `C:\ProgramData\Windhawk` and system services.
 
 #### Option B: Running the PowerShell Script (`.ps1`)
-If you prefer running the raw script directly:
+If you prefer running the raw script directly for complete transparency:
 1. Download the `Windhawk_Backup_Manager.ps1` file.
-2. Right-click the file and select **Run with PowerShell** (or run it from an elevated terminal). 
+2. Right-click the file and select **Run with PowerShell**.
 
 > **Important Note on PowerShell Execution Policy:**
-> By default, Windows restricts running local scripts for security reasons. If you encounter an error stating that *script execution is disabled on this system*, you can temporarily bypass it for the current terminal session by opening PowerShell as Administrator and running:
+> By default, Windows restricts running local scripts for security reasons. If the script flashes and closes immediately or throws a security error, you need to adjust your execution policy.
+>
+> **Method 1: Permanent Fix (Recommended for home users)**
+> Open PowerShell as Administrator and run:
 > ```powershell
-> Set-ExecutionPolicy Bypass -Scope Process -Force
+> Set-ExecutionPolicy RemoteSigned
 > ```
-> After running that command, you can launch the script normally.
+> Press `Y` when prompted. You can now right-click and run `.ps1` files normally forever.
+>
+> **Method 2: Single-Session Bypass (If Method 1 fails or is restricted)**
+> Open PowerShell (or Command Prompt) as Administrator in the folder where you downloaded the script and run:
+> ```powershell
+> powershell -NoProfile -ExecutionPolicy Bypass -File .\Windhawk_Backup_Manager.ps1
+> ```
 
 ---
 
 ### Author
 
 Built by **Osman Onur Koç**  
-🌐 [www.osmanonurkoc.com](https://www.www.osmanonurkoc.com)
+🌐 [www.osmanonurkoc.com](https://www.osmanonurkoc.com)
 
 ---
 
