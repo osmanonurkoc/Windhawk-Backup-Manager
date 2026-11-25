@@ -158,7 +158,7 @@ $Xaml = @'
                             <Border x:Name="ToggleBorder" Grid.Column="0" Width="38" Height="20" CornerRadius="10" Background="{DynamicResource ToggleOffBrush}" BorderBrush="{DynamicResource SubTextBrush}" BorderThickness="1.5" VerticalAlignment="Center" Margin="0,0,12,0">
                                 <Ellipse x:Name="ToggleThumb" Width="12" Height="12" Fill="{DynamicResource SubTextBrush}" HorizontalAlignment="Left" Margin="3,0,0,0"/>
                             </Border>
-                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center"/>
+                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center" RecognizesAccessKey="False"/>
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
@@ -296,6 +296,37 @@ $restoreTempDir = Join-Path $env:TEMP "WindhawkRestoreTemp"
 # Hash table to store ModName -> LibraryFileName mapping
 $script:ModToFileMap = @{}
 
+function Get-ModMetadata {
+    param([string]$SourcePath, [string]$ModId)
+    $meta = @{ Name = $null; Version = $null; Description = $null }
+    $modsSourceDir = Join-Path $SourcePath "ModsSource"
+    $candidates = @(
+        (Join-Path $modsSourceDir "$ModId.wh.cpp"),
+        (Join-Path $modsSourceDir "$ModId.cpp")
+    )
+
+    foreach ($file in $candidates) {
+        if (Test-Path $file) {
+            try {
+                $lineCount = 0
+                foreach ($line in [System.IO.File]::ReadLines($file, [System.Text.Encoding]::UTF8)) {
+                    $lineCount++
+                    if ($lineCount -gt 100 -or $line -match '^\s*//\s*==/WindhawkMod==') { break }
+                    if (-not $meta.Name -and $line -match '^\s*//\s*@name\s+(.+)$') {
+                        $meta.Name = $Matches[1].Trim()
+                    } elseif (-not $meta.Version -and $line -match '^\s*//\s*@version\s+(.+)$') {
+                        $meta.Version = $Matches[1].Trim()
+                    } elseif (-not $meta.Description -and $line -match '^\s*//\s*@description\s+(.+)$') {
+                        $meta.Description = $Matches[1].Trim()
+                    }
+                }
+            } catch {}
+            break
+        }
+    }
+    return $meta
+}
+
 function Populate-ModList {
     param([string]$SourcePath)
     if ($ModListPanel) { $ModListPanel.Children.Clear() }
@@ -337,11 +368,31 @@ function Populate-ModList {
         }
     }
 
-    foreach ($modName in $modNames | Sort-Object) {
-        if ([string]::IsNullOrWhiteSpace($modName)) { continue }
+    $modItems = foreach ($modId in $modNames) {
+        if ([string]::IsNullOrWhiteSpace($modId)) { continue }
+        $meta = Get-ModMetadata -SourcePath $SourcePath -ModId $modId
+        $displayName = if ($meta.Name) {
+            if ($modId.StartsWith("local@")) { "$($meta.Name) (Local)" } else { $meta.Name }
+        } else {
+            $modId
+        }
+
+        $tooltipHeader = if ($meta.Version) { "$modId (v$($meta.Version))" } else { $modId }
+        $tooltipText = if ($meta.Description) { "$tooltipHeader`n$($meta.Description)" } else { $tooltipHeader }
+
+        [PSCustomObject]@{
+            Id          = $modId
+            DisplayName = $displayName
+            Tooltip     = $tooltipText
+        }
+    }
+
+    foreach ($item in ($modItems | Sort-Object DisplayName)) {
         $modsFound = $true
         $cb = New-Object System.Windows.Controls.CheckBox
-        $cb.Content = $modName
+        $cb.Content = $item.DisplayName
+        $cb.Tag = $item.Id
+        $cb.ToolTip = $item.Tooltip
         $cb.IsChecked = $ChkSelectAll.IsChecked
         $cb.Style = $Window.FindResource("FluentToggle")
         if ($ModListPanel) { [void]$ModListPanel.Children.Add($cb) }
@@ -374,7 +425,7 @@ if ($BtnBackup) {
         $selectedMods = @()
         foreach ($child in $ModListPanel.Children) {
             if ($child -is [System.Windows.Controls.CheckBox] -and $child.IsChecked -eq $true) {
-                $selectedMods += $child.Content
+                $selectedMods += $child.Tag
             }
         }
 
@@ -534,7 +585,7 @@ if ($BtnConfirmRestore) {
         $selectedMods = @()
         foreach ($child in $ModListPanel.Children) {
             if ($child -is [System.Windows.Controls.CheckBox] -and $child.IsChecked -eq $true) {
-                $selectedMods += $child.Content
+                $selectedMods += $child.Tag
             }
         }
 
