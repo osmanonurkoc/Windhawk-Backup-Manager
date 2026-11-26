@@ -437,7 +437,8 @@ if ($BtnBackup) {
 
         $dialog = New-Object System.Windows.Forms.SaveFileDialog
         $dialog.Filter = "ZIP File (*.zip)|*.zip"
-        $dialog.FileName = "WindhawkBackup_$(Get-Date -Format 'yyyyMMdd').zip"
+        $timestamp = (Get-Date).ToString("yyyyMMdd_hhmmtt", [System.Globalization.CultureInfo]::InvariantCulture)
+        $dialog.FileName = "WindhawkBackup_$timestamp.zip"
 
         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $TxtStatus.Text = "Backing up selected mods..."
