@@ -27,7 +27,13 @@
 # =============================================================================
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process PowerShell -Verb RunAs -ArgumentList "-WindowStyle Hidden -File `"$($MyInvocation.MyCommand.Path)`""
+    $currentExe = (Get-Process -Id $PID).Path
+    $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+    if ($scriptPath -and $scriptPath -like "*.ps1") {
+        Start-Process -FilePath $currentExe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+    } else {
+        Start-Process -FilePath $currentExe -Verb RunAs
+    }
     Exit
 }
 
@@ -293,6 +299,8 @@ $whProgramData = "C:\ProgramData\Windhawk"
 $tempDir = Join-Path $env:TEMP "WindhawkBackupTemp"
 $restoreTempDir = Join-Path $env:TEMP "WindhawkRestoreTemp"
 
+Get-ChildItem -Path "$whProgramData\Engine\Mods" -Recurse -Filter "*.old_*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+
 # Hash table to store ModName -> LibraryFileName mapping
 $script:ModToFileMap = @{}
 
@@ -307,9 +315,11 @@ function Get-ModMetadata {
 
     foreach ($file in $candidates) {
         if (Test-Path $file) {
+            $streamReader = $null
             try {
+                $streamReader = New-Object System.IO.StreamReader($file, [System.Text.Encoding]::UTF8)
                 $lineCount = 0
-                foreach ($line in [System.IO.File]::ReadLines($file, [System.Text.Encoding]::UTF8)) {
+                while (($line = $streamReader.ReadLine()) -ne $null) {
                     $lineCount++
                     if ($lineCount -gt 100 -or $line -match '^\s*//\s*==/WindhawkMod==') { break }
                     if (-not $meta.Name -and $line -match '^\s*//\s*@name\s+(.+)$') {
@@ -320,7 +330,9 @@ function Get-ModMetadata {
                         $meta.Description = $Matches[1].Trim()
                     }
                 }
-            } catch {}
+            } catch {} finally {
+                if ($streamReader) { $streamReader.Dispose() }
+            }
             break
         }
     }
@@ -352,7 +364,7 @@ function Populate-ModList {
         # Read from ZIP: parse the reg file inside the zip and extract the LibraryFileName mapping
         $regFile = Join-Path $SourcePath "windhawk_reg.reg"
         if (Test-Path $regFile) {
-            $regContent = Get-Content $regFile -Encoding UTF8 -ErrorAction SilentlyContinue
+            $regContent = [System.IO.File]::ReadAllLines($regFile)
             $currentMod = $null
             foreach ($line in $regContent) {
                 if ($line -match '^\[HKEY_LOCAL_MACHINE\\SOFTWARE\\Windhawk\\Engine\\Mods\\(.+)\]$') {
@@ -446,7 +458,7 @@ if ($BtnBackup) {
             $Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
 
             try {
-                if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+                if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
                 New-Item -ItemType Directory -Path "$tempDir\Engine\Mods" | Out-Null
                 New-Item -ItemType Directory -Path "$tempDir\ModsSource" | Out-Null
 
@@ -455,7 +467,11 @@ if ($BtnBackup) {
                 # 1. Export the full registry to a temporary file
                 $fullRegPath = Join-Path $tempDir "full_windhawk.reg"
                 $filteredRegPath = Join-Path $tempDir "windhawk_reg.reg"
-                Start-Process -FilePath "reg.exe" -ArgumentList "export `"HKLM\SOFTWARE\Windhawk`" `"$fullRegPath`" /y" -WindowStyle Hidden -Wait
+                $regExe = "$env:WINDIR\System32\reg.exe"
+                $regProc = Start-Process -FilePath $regExe -ArgumentList "export `"HKLM\SOFTWARE\Windhawk`" `"$fullRegPath`" /y" -WindowStyle Hidden -Wait -PassThru
+                if ($regProc.ExitCode -ne 0) {
+                    throw "Registry export failed with exit code $($regProc.ExitCode)."
+                }
 
                 # 2. Filter registry entries of unselected mods
                 $regLines = [System.IO.File]::ReadAllLines($fullRegPath)
@@ -524,7 +540,7 @@ if ($BtnBackup) {
                 $TxtStatus.Foreground = $Res["RedBrush"]
             } finally {
                 Start-Service -Name "WindhawkService" -ErrorAction SilentlyContinue
-                if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+                if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
             }
         }
     })
@@ -541,7 +557,7 @@ if ($BtnSelectZip) {
             $Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
 
             try {
-                if (Test-Path $restoreTempDir) { Remove-Item $restoreTempDir -Recurse -Force }
+                if (Test-Path $restoreTempDir) { Remove-Item $restoreTempDir -Recurse -Force -ErrorAction SilentlyContinue }
                 New-Item -ItemType Directory -Path $restoreTempDir | Out-Null
                 Expand-Archive -Path $dialog.FileName -DestinationPath $restoreTempDir -Force
 
@@ -577,7 +593,7 @@ if ($BtnCancelRestore) {
         $RestorePanel.Visibility = "Collapsed"
         $TxtStatus.Text = "Operation cancelled, listing installed mods."
         $TxtStatus.Foreground = $Res["TextBrush"]
-        if (Test-Path $restoreTempDir) { Remove-Item $restoreTempDir -Recurse -Force }
+        if (Test-Path $restoreTempDir) { Remove-Item $restoreTempDir -Recurse -Force -ErrorAction SilentlyContinue }
     })
 }
 
@@ -635,14 +651,18 @@ if ($BtnConfirmRestore) {
                 [System.IO.File]::WriteAllLines($filteredRegPath, $filteredLines, [System.Text.Encoding]::Unicode)
 
                 # Import the strictly filtered registry file
-                Start-Process -FilePath "reg.exe" -ArgumentList "import `"$filteredRegPath`"" -WindowStyle Hidden -Wait
+                $regExe = "$env:WINDIR\System32\reg.exe"
+                $regProc = Start-Process -FilePath $regExe -ArgumentList "import `"$filteredRegPath`"" -WindowStyle Hidden -Wait -PassThru
+                if ($regProc.ExitCode -ne 0) {
+                    throw "Registry import failed with exit code $($regProc.ExitCode)."
+                }
             }
 
             if (-not (Test-Path "$whProgramData\ModsSource")) { New-Item -ItemType Directory -Path "$whProgramData\ModsSource" | Out-Null }
             if (-not (Test-Path "$whProgramData\Engine\Mods")) { New-Item -ItemType Directory -Path "$whProgramData\Engine\Mods" | Out-Null }
 
             foreach ($mod in $selectedMods) {
-                # 2. Restore local source codes (if any)
+                # 2. Restore source codes
                 if (Test-Path "$restoreTempDir\ModsSource") {
                     Get-ChildItem -Path "$restoreTempDir\ModsSource" -ErrorAction SilentlyContinue | Where-Object {
                         $_.BaseName -eq $mod -or $_.BaseName -eq "$mod.wh"
@@ -651,14 +671,30 @@ if ($BtnConfirmRestore) {
                     }
                 }
 
-                # 3. Restore compiled mod DLL files with exact LibraryFileName match
+                # 3. Restore compiled mod DLL files with hash comparison and lock handling
                 $libFile = $script:ModToFileMap[$mod]
                 if ($libFile -and (Test-Path "$restoreTempDir\Engine\Mods")) {
                     Get-ChildItem -Path "$restoreTempDir\Engine\Mods" -Recurse -Filter $libFile -ErrorAction SilentlyContinue | ForEach-Object {
                         $rel = $_.FullName.Substring("$restoreTempDir\Engine\Mods\".Length)
                         $dest = Join-Path "$whProgramData\Engine\Mods" (Split-Path $rel -Parent)
                         if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
-                        Copy-Item -Path $_.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
+
+                        $targetFile = Join-Path $dest $_.Name
+                        $needsCopy = $true
+                        if (Test-Path $targetFile) {
+                            $srcHash = (Get-FileHash -Path $_.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+                            $dstHash = (Get-FileHash -Path $targetFile -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+                            if ($srcHash -and $srcHash -eq $dstHash) { $needsCopy = $false }
+                        }
+
+                        if ($needsCopy) {
+                            try {
+                                Copy-Item -Path $_.FullName -Destination $targetFile -Force -ErrorAction Stop
+                            } catch [System.IO.IOException] {
+                                Rename-Item -Path $targetFile -NewName "$($_.Name).old_$(Get-Random)" -Force -ErrorAction SilentlyContinue
+                                Copy-Item -Path $_.FullName -Destination $targetFile -Force -ErrorAction SilentlyContinue
+                            }
+                        }
                     }
                 }
             }
@@ -812,7 +848,7 @@ if ($BtnConfirmRestore) {
             $TxtStatus.Foreground = $Res["RedBrush"]
         } finally {
             Start-Service -Name "WindhawkService" -ErrorAction SilentlyContinue
-            if (Test-Path $restoreTempDir) { Remove-Item $restoreTempDir -Recurse -Force }
+            if (Test-Path $restoreTempDir) { Remove-Item $restoreTempDir -Recurse -Force -ErrorAction SilentlyContinue }
         }
     })
 }
